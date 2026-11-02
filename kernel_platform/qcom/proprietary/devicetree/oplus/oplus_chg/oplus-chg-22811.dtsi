@@ -254,8 +254,54 @@
 	qcom,smart_chg_bcc_support;
 	qcom,voocphy_support = <1>;
 	qcom,input_current_charger_ma = <2000>;
-	qcom,pd_input_current_charger_ma = <2000>;
+	qcom,pd_input_current_charger_ma = <3000>;
 	qcom,qc_input_current_charger_ma = <2000>;
+
+	/* -------- PPS 11 V x 5 A, third-party (generic PD3.0 PPS) adapters --------
+	 * Values mirror the payload that is actually patched into the shipped dtbo
+	 * (artifacts/dtbo/src/pps_props.txt, transcribed from
+	 * artifacts/reports/pps_runtime_audit.md §9.1).  The curve child node
+	 * pps_charge_third_strategy lives in artifacts/dtbo/src/pps_subtree.dts and
+	 * is spliced into the binary blob as well - this source tree cannot
+	 * reproduce the shipped dtbo, see PPS_HANDOFF.md §6.  Keep both in sync.
+	 */
+	/* 8550 only registers this ops provider (chargepump_ic/oplus_pps_cp.c);
+	 * the driver default "mcu-op10" does not exist on this platform. */
+	oplus,pps_ops = "cp-sc8571";
+	/* 1 = PPS_SUPPORT_MCU: the only value that does not require charge-pump
+	 * feedback (2CP/3CP paths call the CP enable/IBUS checks, which never
+	 * succeed on this board). The MCU assumptions are shimmed in the driver:
+	 * VBAT falls back to the gauge, IBUS/VBUS to the ADSP readings. */
+	oplus,pps_support_type = <1>;
+	oplus,pps_support_third = <1>;
+	/* exactly one element: 0xFFFF = all regions allowed */
+	oplus,pps_region_list = <0xFFFF>;
+	oplus,pps_charge_strategy_soc = <0 15 30 50 75 85 90>;
+	oplus,pps_charge_strategy_temp = <0 50 120 200 350 440 520>;
+	oplus,pps_strategy_normal_current = <5000>;
+	oplus,pps_strategy_normal_bypass_limit_current = <6000>;
+	oplus,pps_over_high_or_low_current = <1000>;
+	oplus,pps_warm_allow_vol = <4000>;
+	oplus,pps_warm_allow_soc = <55>;
+	oplus,pps_timeout_third = <15000>;
+	oplus,pps_timeout_oplus = <15000>;
+	oplus,pps_ibat_over_third = <8000>;
+	oplus,pps_ibat_over_oplus = <11400>;
+	oplus,pps_strategy_batt_high_temp = <420 430 435 400 415 430>;
+	oplus,pps_strategy_high_current = <3500 3000 2000 5000 4000 3000>;
+	oplus,pps_low_curr_full_strategy_temp = <120 200 300 440>;
+	oplus,pps_full_cool_sw_vbat = <4450>;
+	oplus,pps_full_normal_sw_vbat = <4500>;
+	oplus,pps_full_normal_hw_vbat = <4510>;
+	oplus,pps_full_ffc_vbat = <4520>;
+	oplus,pps_full_warm_vbat = <4130>;
+	oplus,pps_full_cool_sw_vbat_third = <4450>;
+	oplus,pps_full_normal_sw_vbat_third = <4500>;
+	oplus,pps_full_normal_hw_vbat_third = <4510>;
+	oplus,pps_r_default = <270 45 10 45 20 20 20>;
+	oplus,pps_rmos_mohm = <5>;
+	oplus,pps_r_limit = <150 100 80 70 30>;
+	oplus,pps_exit_ms = <1>;
 
 	qcom,input_current_usb_ma = <500>;
 
