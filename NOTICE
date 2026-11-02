@@ -1,0 +1,58 @@
+NOTICE
+
+devicetree/sm8550
+Kernel modules and device tree sources for the OnePlus 11 (Qualcomm SM8550,
+OPPO project 22811). Used as a submodule of android_kernel_oneplus_sm8550, whose
+scripts/setup-tree.sh links vendor/ and oplus/ to the files in this repository.
+
+1. UPSTREAM
+
+   Repo:    https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8550
+   Branch:  oneplus/sm8550_b_16.0.0_oneplus_11
+   Fork point: 46a66233
+     Synchronize code for OnePlus CPH2447_16.0.5.1301(EX01)
+     CPH2449_16.0.5.1301(EX01) CPH2451_16.0.5.1301(EX01)
+     PHB110_16.0.5.1301(CN01)
+     Based on QCOM release TAG:
+     AU_LINUX_KERNEL.PLATFORM.2.0.R1.00.00.00.004.146
+
+   Content: vendor/ holds the OPPO and Qualcomm drivers, including the oplus
+   charger subsystem. kernel_platform/ holds the device tree sources.
+
+2. CHANGES IN THIS FORK
+
+   Branch feat/16.0/oneplus_11/pps, two commits on top of the fork point:
+     4d11ef49  enable third-party PPS for 22811 and add 11V/5A strategy data
+     2a79fb5a  make the v1 PPS engine work without a charge pump
+
+   Five driver files and one dtsi are touched. Details are in SUPPORT.md in the
+   parent repository.
+
+3. LICENSE
+
+   Upstream license: GPL-2.0.
+
+   Each file keeps its own SPDX header:
+     vendor/oplus/     mostly GPL-2.0-only, a few plain GPL-2.0
+     kernel_platform/  mostly GPL-2.0-only OR BSD-2-Clause
+
+   The full GPL-2.0 text is not duplicated here. It ships with the parent
+   repository:
+     ../../COPYING
+     ../../LICENSES/preferred/GPL-2.0
+
+   Copyright belongs to OnePlus, OPPO, Qualcomm and their contributors.
+
+   37 files under vendor/ carry an OPPO confidentiality notice. They are kept
+   unchanged, and the original terms still apply to them.
+
+4. REFERENCES
+
+   Parent repository: https://github.com/Aibeto/android_kernel_oneplus_sm8550
+   Build and flash steps: SUPPORT.md in the parent repository
+   Code audit: PPS_RUNTIME_AUDIT.md in the parent repository
+
+5. TRADEMARKS AND DISCLAIMER
+
+   OnePlus, OPPO, Qualcomm and Android are trademarks of their respective
+   owners. This is an unofficial fork, not affiliated with or endorsed by them.
