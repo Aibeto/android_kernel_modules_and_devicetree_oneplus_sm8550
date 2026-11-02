@@ -138,7 +138,10 @@
 #define PPS_3RD_VOLT_ADJUST_STEP 40
 #define PPS_3RD_ASK_VOLT_MIN_CNT 3
 #define PPS_3RD_ASK_VOLT_MAX_CNT 3
-#define PPS_3RD_ASK_VOLT_MAX 10500
+/* was 10500 (52.5 W @ 5 A); a standard 11 V / 5 A PPS APDO needs the full
+ * 11 V to reach 55 W. Third-party path only, see oplus_pps.c:4212.
+ */
+#define PPS_3RD_ASK_VOLT_MAX 11000
 
 /*pps other*/
 #define PPS_DUMP_REG_CNT 10

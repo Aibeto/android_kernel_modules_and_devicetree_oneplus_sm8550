@@ -16447,6 +16447,20 @@ bool oplus_get_vbatt_higherthan_xmv(void)
 	}
 }
 
+/*
+ * Boards without a charge pump: the framework never enters its fast-charge
+ * current path for a third-party PPS adapter (chg_type stays 0, so it keeps a
+ * conservative FCC), hence expose an explicit setter for the PPS bypass path.
+ */
+int oplus_chg_set_fcc_current_ma(int ma)
+{
+	if (!g_charger_chip || !g_charger_chip->chg_ops)
+		return -ENODEV;
+	if (!g_charger_chip->chg_ops->charging_current_write_fast)
+		return -EOPNOTSUPP;
+	return g_charger_chip->chg_ops->charging_current_write_fast(ma);
+}
+
 void oplus_chg_set_input_current_without_aicl(int current_ma)
 {
 	if (!g_charger_chip) {

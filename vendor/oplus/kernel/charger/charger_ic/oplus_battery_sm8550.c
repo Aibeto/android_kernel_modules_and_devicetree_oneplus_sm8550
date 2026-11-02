@@ -4212,6 +4212,23 @@ static ssize_t ship_mode_en_show(struct class *c, struct class_attribute *attr,
 }
 static CLASS_ATTR_RW(ship_mode_en);
 
+int oplus_chg_set_pps_config(int vbus_mv, int ibus_ma);
+
+static ssize_t pps_req_store(struct class *c, struct class_attribute *attr,
+			     const char *buf, size_t count)
+{
+	int vbus_mv, ibus_ma, rc;
+
+	if (sscanf(buf, "%d %d", &vbus_mv, &ibus_ma) != 2)
+		return -EINVAL;
+
+	rc = oplus_chg_set_pps_config(vbus_mv, ibus_ma);
+	chg_err("pps_req: request %dmV %dmA, rc=%d\n", vbus_mv, ibus_ma, rc);
+
+	return count;
+}
+static CLASS_ATTR_WO(pps_req);
+
 static struct attribute *battery_class_attrs[] = {
 	&class_attr_soh.attr,
 	&class_attr_resistance.attr,
@@ -4229,6 +4246,7 @@ static struct attribute *battery_class_attrs[] = {
 	&class_attr_restrict_cur.attr,
 	&class_attr_usb_real_type.attr,
 	&class_attr_usb_typec_compliant.attr,
+	&class_attr_pps_req.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(battery_class);
@@ -10546,6 +10564,36 @@ static int oplus_get_ibus_current(void)
 	ibus = DIV_ROUND_CLOSEST((int)pst->prop[prop_id], 1000);
 
 	return ibus;
+}
+
+/*
+ * Exposed to the PPS engine (oplus_pps.c): on boards without a charge pump the
+ * cp_*_ibus getters are always 0, and the third-party PPS loop needs the USB
+ * input current to regulate. Returns mA, -1 when the ADSP channel is not ready.
+ */
+int oplus_chg_get_adsp_usb_current(void)
+{
+	return oplus_get_ibus_current();
+}
+
+/*
+ * Real battery charge-current limit (BATT_CHG_CTRL_LIM), as opposed to the
+ * CHARGE_CONTROL_LIMIT that smbchg_set_fastchg_current_raw() writes. The ADSP
+ * keeps its own (conservative) FCC policy for non-VOOC adapters, so the PPS
+ * bypass path writes this one too.
+ */
+int oplus_chg_set_batt_chg_limit_ma(int ma)
+{
+	struct battery_chg_dev *bcdev = NULL;
+	struct oplus_chg_chip *chip = g_oplus_chip;
+
+	if (!chip)
+		return -ENODEV;
+	bcdev = chip->pmic_spmi.bcdev_chip;
+	if (!bcdev)
+		return -ENODEV;
+	return write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_BATTERY],
+				  BATT_CHG_CTRL_LIM, ma * 1000);
 }
 
 int oplus_adsp_batt_curve_current(void)

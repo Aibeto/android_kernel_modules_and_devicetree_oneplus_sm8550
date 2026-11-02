@@ -141,6 +141,17 @@ int __attribute__((weak)) oplus_chg_pps_get_max_cur(int vbus_mv)
 	return 0;
 }
 
+/*
+ * Strong implementation lives in charger_ic/oplus_battery_sm8550.c and returns
+ * the ADSP USB input current in mA. Boards without a charge pump (22811) have
+ * no cp_*_ibus reading at all, so the third-party loop needs this fallback to
+ * close the loop instead of ramping VBUS to the clamp and tripping
+ * oplus_pps_check_disconnect().
+ */
+int oplus_chg_get_adsp_usb_current(void);
+int oplus_chg_set_fcc_current_ma(int ma);
+int oplus_chg_set_batt_chg_limit_ma(int ma);
+
 int oplus_pps_print_dbg_info(struct oplus_pps_chip *chip)
 {
 	int i = 0;
@@ -1433,14 +1444,78 @@ static bool oplus_pps_slave_get_status(void)
 static int oplus_pps_get_charging_data(struct oplus_pps_chip *chip)
 {
 	int charger_volt_max = 0;
+	int adsp_ibus = 0;
+	int vbus_mv = 0;
+	int vpack_mv = 0;
+	int ibat_ma = 0;
 
 	if (!chip || !chip->ops || !chip->pps_support_type) {
 		pps_err("g_pps_chip null!\n");
 		return -ENODEV;
 	}
 
-	oplus_chg_disable_charge();
-	oplus_chg_suspend_charger();
+	/*
+	 * Boards without a charge pump (bypass topology): the main charger IS the
+	 * charging path, so the CP flow's "disable + suspend, then pps_mos_ctrl"
+	 * would leave nothing charging at all. Keep it enabled and let the PPS
+	 * voltage/current contract limit the input instead.
+	 */
+	if (chip->pps_adapter_type == PPS_ADAPTER_THIRD) {
+		oplus_chg_enable_charge();
+		oplus_chg_unsuspend_charger();
+		oplus_chg_set_input_current_without_aicl(chip->limits.pps_strategy_normal_current);
+		{
+			/* Highest FCC the ADSP has accepted (0 = still probing). */
+			static int fcc_ok;
+			static int fcc_try;
+			static int fcc_logged = -1;
+			static unsigned long last_try;
+			int cap = 5000;
+			int fcc, rc;
+
+			/* Temperature cap (0.1 C units). 6 A is never requested. */
+			if (chip->data.ap_batt_temperature > 400)
+				cap = 3500;
+			if (chip->data.ap_batt_temperature > 430)
+				cap = 2500;
+
+			fcc = fcc_ok ? fcc_ok : 5000;
+			if (fcc > cap)
+				fcc = cap;
+
+			/*
+			 * The ADSP silently drops FCC requests it considers out of range
+			 * (no ACK -> -ETIMEDOUT, ~1 s). While probing, step down on the
+			 * very next cycle instead of waiting for a timer: a failed write
+			 * already costs a full glink timeout, so the ladder converges in
+			 * ~1 s per step. Once a value is accepted only re-assert it when
+			 * it changed or once a second (the framework rewrites its own).
+			 */
+			if (!fcc_ok || fcc != fcc_try ||
+			    time_after(jiffies, last_try + msecs_to_jiffies(1000))) {
+				last_try = jiffies ? jiffies : 1;
+				fcc_try = fcc;
+				rc = oplus_chg_set_fcc_current_ma(fcc);
+				if (rc == 0)
+					rc = oplus_chg_set_batt_chg_limit_ma(fcc);
+				if (rc == 0) {
+					fcc_ok = fcc;
+				} else {
+					/* step down immediately; 3000 is the floor */
+					fcc_ok = (fcc > 3000) ? (fcc - 1000) : 3000;
+				}
+				if (fcc_ok != fcc_logged) {
+					fcc_logged = fcc_ok;
+					pps_err("pps bypass: fcc=%d mA %s, temp=%d\n", fcc,
+						(rc == 0) ? "ok" : "rejected, stepping down",
+						chip->data.ap_batt_temperature);
+				}
+			}
+		}
+	} else {
+		oplus_chg_disable_charge();
+		oplus_chg_suspend_charger();
+	}
 
 	chip->data.ap_batt_soc = oplus_chg_get_ui_soc();
 	chip->data.ap_batt_temperature = oplus_chg_match_temp_for_chging();
@@ -1504,6 +1579,44 @@ static int oplus_pps_get_charging_data(struct oplus_pps_chip *chip)
 
 		chip->data.ap_input_current =
 			chip->data.cp_master_ibus + chip->data.cp_slave_ibus + chip->data.cp_slave_b_ibus;
+	}
+
+	/*
+	 * Boards without a charge pump (bypass topology, e.g. 22811): the CP nodes
+	 * never probe, so every cp_*_ibus above stays 0 forever and the third-party
+	 * loop has no current feedback -- it ramps VBUS to PPS_3RD_ASK_VOLT_MAX while
+	 * oplus_pps_check_disconnect() stops PPS as "disconnected". Fall back to the
+	 * ADSP USB input current in that case.
+	 */
+	if (chip->pps_adapter_type == PPS_ADAPTER_THIRD && chip->data.ap_input_current <= 0) {
+		vbus_mv = oplus_chg_get_charger_voltage();
+		if (vbus_mv < 4000)
+			vbus_mv = chip->target_charger_volt;
+		vpack_mv = chip->data.ap_batt_volt * oplus_chg_get_batt_num();
+		ibat_ma = abs(chip->data.ap_batt_current);
+		adsp_ibus = oplus_chg_get_adsp_usb_current();
+		if (adsp_ibus > 0) {
+			chip->data.ap_input_current = adsp_ibus;
+			pps_err("no cp ibus, use adsp usb ibus %d mA\n", adsp_ibus);
+		} else if (vbus_mv >= 4000 && vpack_mv > 0 && ibat_ma > 0) {
+			/* P_in ~= P_batt: ibus = ibat * vpack / vbus / 0.9 */
+			adsp_ibus = (ibat_ma * vpack_mv * 10) / (vbus_mv * 9);
+			if (adsp_ibus > 0) {
+				chip->data.ap_input_current = adsp_ibus;
+				pps_err("no cp ibus, estimate ibus=%d mA (vbus=%d vpack=%d ibat=%d)\n",
+					adsp_ibus, vbus_mv, vpack_mv, ibat_ma);
+			}
+		} else {
+			pps_err("no cp ibus and no estimate (vbus=%d vpack=%d ibat=%d)\n",
+				vbus_mv, vpack_mv, ibat_ma);
+		}
+	}
+
+	/* Same missing CP feedback for VBUS: fall back to the ADSP reading. */
+	if (chip->pps_adapter_type == PPS_ADAPTER_THIRD && chip->data.ap_input_volt <= 0) {
+		vbus_mv = oplus_chg_get_charger_voltage();
+		if (vbus_mv > 0)
+			chip->data.ap_input_volt = vbus_mv;
 	}
 	chip->data.vbat0 = oplus_pps_get_vbat0(chip);
 	pps_err(" [%d, %d, %d, %d, %d], [%d, %d, %d, %d, %d, %d] [%d, %d, %d, %d, %d, %d]\n", chip->data.ap_batt_volt,
@@ -2739,6 +2852,21 @@ static int oplus_pps_get_target_current(struct oplus_pps_chip *chip)
 	if (!chip || !chip->ops || !chip->pps_support_type)
 		return -ENODEV;
 
+	/*
+	 * No charge pump (bypass topology): the curve/BCC/cp-ratio current model
+	 * below assumes a 2:1 divider and yields nonsense here (observed 700 mA).
+	 * Use the PPS setpoint from DT as the IBUS target, derated by battery
+	 * temperature.
+	 */
+	if (chip->pps_adapter_type == PPS_ADAPTER_THIRD &&
+	    oplus_pps_get_support_type() == PPS_SUPPORT_MCU) {
+		chip->ilimit.current_batt_curve = chip->limits.pps_strategy_normal_current;
+		if (chip->data.ap_batt_temperature > 400)
+			chip->ilimit.current_batt_curve = 4000;
+		if (chip->data.ap_batt_temperature > 430)
+			chip->ilimit.current_batt_curve = 3000;
+	}
+
 	pps_err("[%d, %d, %d, %d, %d, %d, %d, %d, %d]\n", chip->ilimit.current_batt_curve, chip->ilimit.current_batt_temp,
 		chip->ilimit.current_cool_down, chip->ilimit.current_bcc, chip->ilimit.cp_ibus_down,
 		chip->ilimit.cp_tdie_down, chip->ilimit.cp_r_down, chip->ilimit.current_slow_chg, chip->ilimit.current_fcl);
@@ -3445,6 +3573,15 @@ static void oplus_pps_check_disconnect(struct oplus_pps_chip *chip)
 	if (chip->pps_status <= OPLUS_PPS_STATUS_OPEN_MOS)
 		return;
 
+	/*
+	 * Third-party PPS on a board without charge pumps: there is no CP IBUS to
+	 * read (see oplus_pps_get_charging_data()), and an adapter removal is already
+	 * detected through the ADSP usb_type notification, so a zero/estimated IBUS
+	 * must not be taken as "output disconnected".
+	 */
+	if (chip->pps_adapter_type == PPS_ADAPTER_THIRD && !chip->cp.master_enable)
+		return;
+
 	if (chip->pps_status > OPLUS_PPS_STATUS_OPEN_MOS) {
 		if (chip->data.ap_input_current < PPS_DISCONNECT_IOUT_MIN) {
 			chip->count.output_low++;
@@ -3905,7 +4042,7 @@ static int oplus_pps_action_status_start(struct oplus_pps_chip *chip)
 	if (!chip || !chip->ops || !chip->pps_support_type)
 		return -ENODEV;
 
-	if (oplus_pps_get_support_type() == PPS_SUPPORT_MCU) {
+	if (oplus_pps_get_support_type() == PPS_SUPPORT_MCU && chip->data.vbat0 > 0) {
 		vbat = chip->data.vbat0 / 2;
 	} else {
 		vbat = chip->data.ap_batt_volt;
@@ -4173,7 +4310,7 @@ static int oplus_3rd_pps_action_volt_change(struct oplus_pps_chip *chip)
 		pps_err("3rd pps chargering volt okay\n");
 	}
 
-	if (oplus_pps_get_support_type() == PPS_SUPPORT_MCU) {
+	if (oplus_pps_get_support_type() == PPS_SUPPORT_MCU && chip->data.vbat0 > 0) {
 		vbat = chip->data.vbat0 / 2;
 	} else {
 		vbat = chip->data.ap_batt_volt;
@@ -5020,6 +5157,12 @@ static void oplus_pps_ready_force2svooc_check_work(struct work_struct *work)
 	struct oplus_pps_chip *chip = container_of(work, struct oplus_pps_chip, ready_force2svooc_work.work);
 
 	if (!chip || !chip->pps_support_type) {
+		return;
+	}
+
+	/* A third-party PPS adapter has no SVOOC path: never park here. */
+	if (chip->pps_adapter_type == PPS_ADAPTER_THIRD) {
+		chip->pps_startup_retry_times = 0;
 		return;
 	}
 

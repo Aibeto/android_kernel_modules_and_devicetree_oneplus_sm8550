@@ -204,7 +204,12 @@ void oplus_chg_region_check_init(struct oplus_chg_chip *chip)
 	if (chip == NULL)
 		return;
 
-	if (get_regionid_from_cmdline())
-		oplus_parse_pps_region_list(chip);
+	/* Keep the bootargs region id when present, but always parse the DT
+	 * lists: without "oplus_region=" in /chosen bootargs the lists used to
+	 * stay empty, so even a single 0xFFFF entry (all regions allowed) never
+	 * took effect and third-party PPS stayed permanently disabled.
+	 */
+	(void)get_regionid_from_cmdline();
+	oplus_parse_pps_region_list(chip);
 }
 
